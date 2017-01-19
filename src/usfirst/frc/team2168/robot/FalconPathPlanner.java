@@ -13,12 +13,12 @@ import java.util.List;
  * algorithms are very efficient path planning that can be used to Navigate in Real-time.
  * 
  * This Class uses a method of Gradient Decent, and other optimization techniques to produce smooth Velocity profiles
- * for both left and right wheels of a differential drive robot.
+ * for the four wheels of a mecanum drive robot.
  * 
  * This Class does not attempt to calculate quintic or cubic splines for best fitting a curve. It is for this reason, the algorithm can be ran
  * on embedded devices with very quick computation times.
  * 
- * The output of this function are independent velocity profiles for the left and right wheels of a differential drive chassis. The velocity
+ * The output of this function are independent velocity profiles for the four wheels of a mecanum drive chassis. The velocity
  * profiles start and end with 0 velocity and maintain smooth transitions throughout the path. 
  * 
  * This algorithm is a port from a similar algorithm running on a Robot used for my PhD thesis. I have not fully optimized
@@ -39,18 +39,24 @@ public class FalconPathPlanner
 	public double[][] origPath;
 	public double[][] nodeOnlyPath;
 	public double[][] smoothPath;
-	public double[][] leftPath;
-	public double[][] rightPath;
+	public double[][] leftFrontPath;
+	public double[][] leftRearPath;
+	public double[][] rightFrontPath;
+	public double[][] rightRearPath;
 
 	//Orig Velocity
 	public double[][] origCenterVelocity;
-	public double[][] origRightVelocity;
-	public double[][] origLeftVelocity;
+	public double[][] origLeftFrontVelocity;
+	public double[][] origLeftRearVelocity;
+	public double[][] origRightFrontVelocity;
+	public double[][] origRightRearVelocity;
 
 	//smooth velocity
 	public double[][] smoothCenterVelocity;
-	public double[][] smoothRightVelocity;
-	public double[][] smoothLeftVelocity;
+	public double[][] smoothLeftFrontVelocity;
+	public double[][] smoothLeftRearVelocity;
+	public double[][] smoothRightFrontVelocity;
+	public double[][] smoothRightRearVelocity;
 
 	//accumulated heading
 	public double[][] heading;
@@ -70,20 +76,24 @@ public class FalconPathPlanner
 
 	/**
 	 * Constructor, takes a Path of Way Points defined as a double array of column vectors representing the global
-	 * cartesian points of the path in {x,y} coordinates. The waypoint are traveled from one point to the next in sequence.
+	 * cartesian points of the path in {x,y} coordinates and a third heading coordinate (in degrees). The waypoints 
+	 * are traveled from one point to the next in sequence. This is an expansion on the original SmoothPathPlanner
+	 * for use with a mecanum drive robot.
 	 * 
 	 * For example: here is a properly formated waypoint array
 	 * 
-	 * double[][] waypointPath = new double[][]{
-				{1, 1},
-				{5, 1},
-				{9, 12},
-				{12, 9},
-				{15,6},
-				{15, 4}
+	 * double[][][] waypointPath = new double[][][]{
+				{1, 1, 0},
+				{5, 1, 0},
+				{9, 12, 90},
+				{12, 9, 90},
+				{15, 6, 135},
+				{15, 4, 135}
 		};
 
 		This path goes from {1,1} -> {5,1} -> {9,12} -> {12, 9} -> {15,6} -> {15,4}
+		During the transition from {5,1} to {9,12} the robot rotates from a straight heading (relative to its start)
+		to a 90 degree heading.  Between position {12,9} and {15,6} the robot rotates to a heading of 135 degrees.
 
 		The units of these coordinates are position units assumed by the user (i.e inch, foot, meters) 
 	 * @param path
@@ -113,15 +123,15 @@ public class FalconPathPlanner
 
 
 	/**
-	 * Prints Cartesian Coordinates to the System Output as Column Vectors in the Form X	Y
+	 * Prints Cartesian Coordinates to the System Output as Column Vectors in the Form X	Y	Z
 	 * @param path
 	 */
 	public static void print(double[][] path)
 	{
-		System.out.println("X: \t Y:");
+		System.out.println("X: \t Y: \t Z: ");
 
 		for(double[] u: path)
-			System.out.println(u[0]+ "\t" +u[1]);
+			System.out.println(u[0] + "\t" + u[1] + "\t" + u[2]);
 	}
 
 	/**
@@ -236,7 +246,8 @@ public class FalconPathPlanner
 
 	/**
 	 * reduces the path into only nodes which change direction. This allows the algorithm to know at what points
-	 * the original WayPoint vector changes. 
+	 * the original WayPoint vector changes. The direction change can come through either directional or rotational
+	 * changes of the mecanum drive.
 	 * 
 	 * BigO: Order N + Order M, Where N is length of original Path, and M is length of Nodes found in Path
 	 * @param path
@@ -258,20 +269,21 @@ public class FalconPathPlanner
 			double vector2 = Math.atan2((path[i+1][1]-path[i][1]),path[i+1][0]-path[i][0]);
 
 			//determine if both vectors have a change in direction
-			if(Math.abs(vector2-vector1)>=0.01)
-				li.add(path[i]);					
+			if(Math.abs(vector2-vector1)>=0.01 || Math.abs(path[i+1][2]-path[i][2]) > 0)
+				li.add(path[i]);
 		}
 
 		//save last
 		li.add(path[path.length-1]);
 
 		//re-write nodes into new 2D Array
-		double[][] temp = new double[li.size()][2];
+		double[][] temp = new double[li.size()][3];
 
 		for (int i = 0; i < li.size(); i++)
 		{
 			temp[i][0] = li.get(i)[0];
 			temp[i][1] = li.get(i)[1];
+			temp[i][2] = li.get(i)[2];
 		}	
 
 		return temp;
@@ -281,6 +293,11 @@ public class FalconPathPlanner
 	/**
 	 * Returns Velocity as a double array. The First Column vector is time, based on the time step, the second vector 
 	 * is the velocity magnitude.
+	 * 
+	 * Notes:
+	 * Velocity magnitude is now going to have to be able to go negative with mecanum, as the wheels will need to reverse in a case of non-forward movement
+	 * 
+	 * 
 	 * 
 	 * BigO: order N
 	 * @param smoothPath
@@ -491,14 +508,15 @@ public class FalconPathPlanner
 		return ret;
 	}
 /**
- * Calculates the left and right wheel paths based on robot track width
+ * Calculates all wheel paths based on robot track width and length
  * 
  * Big O: 2N
  * 
  * @param smoothPath - center smooth path of robot
- * @param robotTrackWidth - width between left and right wheels of robot of skid steer chassis. 
+ * @param robotTrackWidth - width between left and right wheels of robot of mecanum chassis.
+ * @param robotTrackLength - length from front to back of robot mecanum chassis. 
  */
-	public void leftRight(double[][] smoothPath, double robotTrackWidth)
+	public void calcWheelPaths(double[][] smoothPath, double robotTrackWidth, double robotTrackLength)
 	{
 
 		double[][] leftPath = new double[smoothPath.length][2];
@@ -574,6 +592,22 @@ public class FalconPathPlanner
 
 		return temp;		
 	}
+	
+	/**
+	 * Returns the third column of a 2D array of doubles
+	 * 
+	 * @param arr 2D array of doubles
+	 * @return array of doubles representing the 1st column of the initial parameter
+	 */
+	public static double[] getZVector(double[][] arr)
+	{
+		double[] temp = new double[arr.length];
+
+		for(int i=0; i<temp.length; i++)
+			temp[i] = arr[i][2];
+
+		return temp;		
+	}
 
 	public static double[][] transposeVector(double[][] arr)
 	{
@@ -613,15 +647,18 @@ public class FalconPathPlanner
 
 	/**
 	 * This code will calculate a smooth path based on the program parameters. If the user doesn't set any parameters, the will use the defaults optimized for most cases. The results will be saved into the corresponding
-	 * class members. The user can then access .smoothPath, .leftPath, .rightPath, .smoothCenterVelocity, .smoothRightVelocity, .smoothLeftVelocity as needed.
+	 * class members. The user can then access .smoothPath, .leftFrontPath, .leftRearPath, .rightFrontPath, .rightRearPath, .smoothCenterVelocity, .smoothRightFrontVelocity, .smoothLeftFrontVelocity, 
+	 * .smoothRightRearVelocity, .smoothLeftRearVelocity as needed.
 	 * 
-	 * After calling this method, the user only needs to pass .smoothRightVelocity[1], .smoothLeftVelocity[1] to the corresponding speed controllers on the Robot, and step through each setPoint.
+	 * After calling this method, the user only needs to pass .smoothRightFrontVelocity[1], .smoothRightRearVelocity[1], .smoothLeftFrontVelocity[1], and .smoothLeftRearVelocity[1] 
+	 * to the corresponding speed controllers on the Robot, and step through each setPoint.
 	 * 
 	 * @param totalTime - time the user wishes to complete the path in seconds. (this is the maximum amount of time the robot is allowed to take to traverse the path.)
 	 * @param timeStep - the frequency at which the robot controller is running on the robot. 
-	 * @param robotTrackWidth - distance between left and right side wheels of a skid steer chassis. Known as the track width.
+	 * @param robotTrackWidth - distance between left and right side wheels of a mecanum drive chassis. Known as the track width.
+	 * @param robotTrackLength - distance between front and rear wheels of a mecanum drive chassis. Known as track length.
 	 */
-	public void calculate(double totalTime, double timeStep, double robotTrackWidth)
+	public void calculate(double totalTime, double timeStep, double robotTrackWidth, double robotTrackLength)
 	{
 		/**
 		 * pseudo code
@@ -630,7 +667,7 @@ public class FalconPathPlanner
 		 * 2. Calculate how many total datapoints we need to satisfy the controller for "playback"
 		 * 3. Simultaneously inject and smooth the path until we end up with a smooth path with required number 
 		 *    of datapoints, and which follows the waypoint path.
-		 * 4. Calculate left and right wheel paths by calculating parallel points at each datapoint 
+		 * 4. Calculate all wheel paths by calculating four points at each datapoint 
 		 */
 
 
@@ -655,32 +692,42 @@ public class FalconPathPlanner
 			}
 		}
 
-		//calculate left and right path based on center path
-		leftRight(smoothPath, robotTrackWidth);
+		//calculate mecanum wheel paths based on center path
+		calcWheelPaths(smoothPath, robotTrackWidth, robotTrackLength);
 
 		origCenterVelocity = velocity(smoothPath, timeStep);
-		origLeftVelocity = velocity(leftPath, timeStep);
-		origRightVelocity = velocity(rightPath, timeStep);
+		origLeftFrontVelocity = velocity(leftFrontPath, timeStep);
+		origLeftRearVelocity = velocity(leftRearPath, timeStep);
+		origRightFrontVelocity = velocity(rightFrontPath, timeStep);
+		origRightRearVelocity = velocity(rightRearPath, timeStep);
 
 		//copy smooth velocities into fix Velocities
 		smoothCenterVelocity =  doubleArrayCopy(origCenterVelocity);
-		smoothLeftVelocity =  doubleArrayCopy(origLeftVelocity);
-		smoothRightVelocity =  doubleArrayCopy(origRightVelocity);
+		smoothLeftFrontVelocity =  doubleArrayCopy(origLeftFrontVelocity);
+		smoothLeftRearVelocity = doubleArrayCopy(origLeftRearVelocity);
+		smoothRightFrontVelocity =  doubleArrayCopy(origRightFrontVelocity);
+		smoothRightRearVelocity = doubleArrayCopy(origRightRearVelocity);
 
 		//set final vel to zero
 		smoothCenterVelocity[smoothCenterVelocity.length-1][1] = 0.0;
-		smoothLeftVelocity[smoothLeftVelocity.length-1][1] = 0.0;
-		smoothRightVelocity[smoothRightVelocity.length-1][1] = 0.0;
+		smoothLeftFrontVelocity[smoothLeftFrontVelocity.length-1][1] = 0.0;
+		smoothLeftRearVelocity[smoothLeftRearVelocity.length-1][1] = 0.0;
+		smoothRightFrontVelocity[smoothRightFrontVelocity.length-1][1] = 0.0;
+		smoothRightRearVelocity[smoothLeftFrontVelocity.length-1][1] = 0.0;
 
 		//Smooth velocity with zero final V
 		smoothCenterVelocity = smoother(smoothCenterVelocity, velocityAlpha, velocityBeta, velocityTolerance);
-		smoothLeftVelocity = smoother(smoothLeftVelocity, velocityAlpha, velocityBeta, velocityTolerance);
-		smoothRightVelocity = smoother(smoothRightVelocity,velocityAlpha, velocityBeta, velocityTolerance);
+		smoothLeftFrontVelocity = smoother(smoothLeftFrontVelocity, velocityAlpha, velocityBeta, velocityTolerance);
+		smoothLeftRearVelocity = smoother(smoothLeftRearVelocity, velocityAlpha, velocityBeta, velocityTolerance);
+		smoothRightFrontVelocity = smoother(smoothRightFrontVelocity,velocityAlpha, velocityBeta, velocityTolerance);
+		smoothRightRearVelocity = smoother(smoothRightRearVelocity, velocityAlpha, velocityBeta, velocityTolerance);
 
 		//fix velocity distance error
 		smoothCenterVelocity = velocityFix(smoothCenterVelocity, origCenterVelocity, 0.0000001);
-		smoothLeftVelocity = velocityFix(smoothLeftVelocity, origLeftVelocity, 0.0000001);
-		smoothRightVelocity = velocityFix(smoothRightVelocity, origRightVelocity, 0.0000001);
+		smoothLeftFrontVelocity = velocityFix(smoothLeftFrontVelocity, origLeftFrontVelocity, 0.0000001);
+		smoothLeftRearVelocity = velocityFix(smoothLeftRearVelocity, origLeftRearVelocity, 0.0000001);
+		smoothRightFrontVelocity = velocityFix(smoothRightFrontVelocity, origRightFrontVelocity, 0.0000001);
+		smoothRightRearVelocity = velocityFix(smoothRightRearVelocity, origRightRearVelocity, 0.0000001);
 	}
 
 	//main program
@@ -692,20 +739,21 @@ public class FalconPathPlanner
 
 		//create waypoint path
 		double[][] waypoints = new double[][]{
-				{1, 1},
-				{5, 1},
-				{9, 12},
-				{12, 9},
-				{15, 6},
-				{19, 12}
+				{1, 1, 0},
+				{5, 1, 0},
+				{9, 12, 45},
+				{12, 9, 45},
+				{15, 6, 120},
+				{19, 12, 180}
 		}; 
 
 		double totalTime = 8; //seconds
 		double timeStep = 0.1; //period of control loop on Rio, seconds
 		double robotTrackWidth = 2; //distance between left and right wheels, feet
+		double robotTrackLength = 2.5; //distance between front and rear wheels, feet
 
 		final FalconPathPlanner path = new FalconPathPlanner(waypoints);
-		path.calculate(totalTime, timeStep, robotTrackWidth);
+		path.calculate(totalTime, timeStep, robotTrackWidth, robotTrackLength);
 
 		System.out.println("Time in ms: " + (System.currentTimeMillis()-start));
 
@@ -717,16 +765,18 @@ public class FalconPathPlanner
 			fig2.xGridOn();
 			fig2.setYLabel("Velocity (ft/sec)");
 			fig2.setXLabel("time (seconds)");
-			fig2.setTitle("Velocity Profile for Left and Right Wheels \n Left = Cyan, Right = Magenta");
-			fig2.addData(path.smoothRightVelocity, Color.magenta);
-			fig2.addData(path.smoothLeftVelocity, Color.cyan);
+			fig2.setTitle("Velocity Profile for Left and Right Wheels \n LF = Cyan, RF = Magenta, LR = Orange, RR = Green");
+			fig2.addData(path.smoothRightFrontVelocity, Color.magenta);
+			fig2.addData(path.smoothLeftFrontVelocity, Color.cyan);
+			fig2.addData(path.smoothRightRearVelocity, Color.orange);
+			fig2.addData(path.smoothLeftRearVelocity, Color.green);
 
 			FalconLinePlot fig1 = new FalconLinePlot(path.nodeOnlyPath,Color.blue,Color.green);
 			fig1.yGridOn();
 			fig1.xGridOn();
 			fig1.setYLabel("Y (feet)");
 			fig1.setXLabel("X (feet)");
-			fig1.setTitle("Top Down View of FRC Field (24ft x 27ft) \n shows global position of robot path, along with left and right wheel trajectories");
+			fig1.setTitle("Top Down View of FRC Field (24ft x 27ft) \n shows global position of robot path, along with leftFront, leftRear, rightFront, and rightRear wheel trajectories");
 
 			//force graph to show 1/2 field dimensions of 24ft x 27 feet
 			fig1.setXTic(0, 27, 1);
@@ -734,8 +784,10 @@ public class FalconPathPlanner
 			fig1.addData(path.smoothPath, Color.red, Color.blue);
 
 
-			fig1.addData(path.leftPath, Color.magenta);
-			fig1.addData(path.rightPath, Color.magenta);
+			fig1.addData(path.leftFrontPath, Color.magenta);
+			fig1.addData(path.leftRearPath, Color.orange);
+			fig1.addData(path.rightFrontPath, Color.magenta);
+			fig1.addData(path.rightRearPath, Color.green);
 
 
 			//generate poof path used in 2014 Einstein
@@ -804,10 +856,10 @@ public class FalconPathPlanner
 
 
 		double[][] CheesyPath = new double[][]{
-				{7,16},
-				{11,16},
-				{17,28},
-				{23,28},
+				{7,16,0},
+				{11,16,0},
+				{17,28,0},
+				{23,28,0},
 		};
 
 		long start = System.currentTimeMillis();
@@ -815,9 +867,10 @@ public class FalconPathPlanner
 		double totalTime = 5; //seconds
 		double timeStep = 0.1; //period of control loop on Rio, seconds
 		double robotTrackWidth = 2; //distance between left and right wheels, feet
+		double robotTrackLength = 2.5; //distance between front and rear wheels, feet
 
 		final FalconPathPlanner path = new FalconPathPlanner(CheesyPath);
-		path.calculate(totalTime, timeStep, robotTrackWidth);
+		path.calculate(totalTime, timeStep, robotTrackWidth, robotTrackLength);
 		
 		System.out.println("Time in ms: " + (System.currentTimeMillis()-start));
 
@@ -826,8 +879,10 @@ public class FalconPathPlanner
 
 		//add all other paths
 		fig3.addData(path.smoothPath, Color.red, Color.blue);
-		fig3.addData(path.leftPath, Color.magenta);
-		fig3.addData(path.rightPath, Color.magenta);
+		fig3.addData(path.leftFrontPath, Color.magenta);
+		fig3.addData(path.leftRearPath, Color.orange);
+		fig3.addData(path.rightFrontPath, Color.magenta);
+		fig3.addData(path.rightRearPath, Color.green);
 
 
 		//Velocity
@@ -837,8 +892,10 @@ public class FalconPathPlanner
 		fig4.setYLabel("Velocity (ft/sec)");
 		fig4.setXLabel("time (seconds)");
 		fig4.setTitle("Velocity Profile for Left and Right Wheels \n Left = Cyan, Right = Magenta");
-		fig4.addData(path.smoothRightVelocity, Color.magenta);
-		fig4.addData(path.smoothLeftVelocity, Color.cyan);
+		fig4.addData(path.smoothRightFrontVelocity, Color.magenta);
+		fig4.addData(path.smoothRightRearVelocity, Color.orange);
+		fig4.addData(path.smoothLeftFrontVelocity, Color.cyan);
+		fig4.addData(path.smoothLeftRearVelocity, Color.green);
 
 		//path heading accumulated in degrees
 		//FalconPathPlanner.print(path.heading);
