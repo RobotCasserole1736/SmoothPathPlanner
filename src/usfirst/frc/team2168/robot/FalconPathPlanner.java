@@ -175,7 +175,7 @@ public class FalconPathPlanner
 		double morePoints[][];
 
 		//create extended 2 Dimensional array to hold additional points
-		morePoints = new double[orig.length + ((numToInject)*(orig.length-1))][2];
+		morePoints = new double[orig.length + ((numToInject)*(orig.length-1))][3];
 
 		int index=0;
 
@@ -185,6 +185,7 @@ public class FalconPathPlanner
 			//copy first
 			morePoints[index][0] = orig[i][0];
 			morePoints[index][1] = orig[i][1];
+			morePoints[index][2] = orig[i][2];
 			index++;
 
 			for(int j=1; j<numToInject+1; j++)
@@ -194,6 +195,9 @@ public class FalconPathPlanner
 
 				//calculate intermediate y points  between j and j+1 original points
 				morePoints[index][1] = j*((orig[i+1][1]-orig[i][1])/(numToInject+1))+orig[i][1];
+				
+				//calculate intermediate rotation points between j and j+1 original points
+				morePoints[index][2] = j*((orig[i+1][2]-orig[i][2])/(numToInject+1))+orig[i][2];
 
 				index++;
 			}
@@ -202,6 +206,7 @@ public class FalconPathPlanner
 		//copy last
 		morePoints[index][0] =orig[orig.length-1][0];
 		morePoints[index][1] =orig[orig.length-1][1];
+		morePoints[index][2] =orig[orig.length-1][2];
 		index++;
 
 		return morePoints;
@@ -268,7 +273,7 @@ public class FalconPathPlanner
 			double vector1 = Math.atan2((path[i][1]-path[i-1][1]),path[i][0]-path[i-1][0]);
 			double vector2 = Math.atan2((path[i+1][1]-path[i][1]),path[i+1][0]-path[i][0]);
 
-			//determine if both vectors have a change in direction
+			//determine if both vectors or heading have a change in direction
 			if(Math.abs(vector2-vector1)>=0.01 || Math.abs(path[i+1][2]-path[i][2]) > 0)
 				li.add(path[i]);
 		}
@@ -521,6 +526,10 @@ public class FalconPathPlanner
 
 		double[][] leftPath = new double[smoothPath.length][2];
 		double[][] rightPath = new double[smoothPath.length][2];
+		double[][] leftFrontPath = new double[smoothPath.length][2];
+		double[][] leftRearPath = new double[smoothPath.length][2];
+		double[][] rightFrontPath = new double[smoothPath.length][2];
+		double[][] rightRearPath = new double[smoothPath.length][2];
 
 		double[][] gradient = new double[smoothPath.length][2];
 
@@ -532,16 +541,17 @@ public class FalconPathPlanner
 
 		for (int i=0; i<gradient.length; i++)
 		{
-			leftPath[i][0] = (robotTrackWidth/2 * Math.cos(gradient[i][1] + Math.PI/2)) + smoothPath[i][0];
-			leftPath[i][1] = (robotTrackWidth/2 * Math.sin(gradient[i][1] + Math.PI/2)) + smoothPath[i][1];
+			double headingRad = Math.toRadians(smoothPath[i][2]);
+			leftPath[i][0] = robotTrackWidth/2 * Math.cos(headingRad + Math.PI/2) + smoothPath[i][0];
+			leftPath[i][1] = robotTrackWidth/2 * Math.sin(headingRad + Math.PI/2) + smoothPath[i][1];
 
-			rightPath[i][0] = robotTrackWidth/2 * Math.cos(gradient[i][1] - Math.PI/2) + smoothPath[i][0];
-			rightPath[i][1] = robotTrackWidth/2 * Math.sin(gradient[i][1] - Math.PI/2) + smoothPath[i][1];
+			rightPath[i][0] = robotTrackWidth/2 * Math.cos(headingRad - Math.PI/2) + smoothPath[i][0];
+			rightPath[i][1] = robotTrackWidth/2 * Math.sin(headingRad - Math.PI/2) + smoothPath[i][1];
 
-			//convert to degrees 0 to 360 where 0 degrees is +X - axis, accumulated to aline with WPI sensor
+			//convert to degrees 0 to 360 where 0 degrees is +X - axis, accumulated to align with WPI sensor
 			double deg = Math.toDegrees(gradient[i][1]);
 
-			gradient[i][1] = deg;
+			gradient[i][1] = smoothPath[i][2] + 90;
 
 			if(i>0)
 			{
