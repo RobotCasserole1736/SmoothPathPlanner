@@ -32,8 +32,22 @@ import java.util.List;
  * @date 2014-Aug-11
  *
  */
-public class FalconPathPlanner
+public class MecanumPathPlanner
 {
+	
+	/**
+	   * The location of a motor on the robot for the purpose of determining velocity.
+	   * The kNone "motor" denotes the center of the robot 
+	   */
+	public enum MotorType {
+		kFrontLeft(0), kFrontRight(1), kRearLeft(2), kRearRight(3), kNone(4);
+	
+		public final int value;
+	
+		private MotorType(int value) {
+			this.value = value;
+		}
+	}
 
 	//Path Variables
 	public double[][] origPath;
@@ -98,7 +112,7 @@ public class FalconPathPlanner
 		The units of these coordinates are position units assumed by the user (i.e inch, foot, meters) 
 	 * @param path
 	 */
-	public FalconPathPlanner(double[][] path)
+	public MecanumPathPlanner(double[][] path)
 	{
 		this.origPath = doubleArrayCopy(path);
 
@@ -307,9 +321,10 @@ public class FalconPathPlanner
 	 * BigO: order N
 	 * @param smoothPath
 	 * @param timeStep
+	 * @param motor The motor location on the robot (or kNone for center)
 	 * @return
 	 */
-	double[][] velocity(double[][] smoothPath, double timeStep)
+	double[][] velocity(double[][] smoothPath, double timeStep, MotorType motor)
 	{
 		double[] dxdt = new double[smoothPath.length];
 		double[] dydt = new double[smoothPath.length];
@@ -331,14 +346,20 @@ public class FalconPathPlanner
 			velocity[i][0]=velocity[i-1][0]+timeStep;
 			heading[i][0]=heading[i-1][0]+timeStep;
 
-			//calculate velocity
-			velocity[i][1] = Math.sqrt(Math.pow(dxdt[i],2) + Math.pow(dydt[i],2));
+			//calculate velocity - if calculating center velocity do it the old way,
+			//otherwise multiply by [1,1] or [-1,1] force vector
+			//(multiplication by one specified for clarity)
+			if(motor == MotorType.kNone)
+				velocity[i][1] = Math.sqrt(Math.pow(dxdt[i],2) + Math.pow(dydt[i],2));
+			else if(motor == MotorType.kFrontLeft || motor == MotorType.kRearRight)
+				velocity[i][1] = dxdt[i] * 1 + dydt[i] * 1;
+			else
+				velocity[i][1] = dxdt[i] * -1 + dydt[i] * 1;
 		}
-
-
+		
 		return velocity;
-
 	}
+	
 	/**
 	 * optimize velocity by minimizing the error distance at the end of travel
 	 * when this function converges, the fixed velocity vector will be smooth, start
@@ -523,9 +544,6 @@ public class FalconPathPlanner
  */
 	public void calcWheelPaths(double[][] smoothPath, double robotTrackWidth, double robotTrackLength)
 	{
-
-		double[][] leftPath = new double[smoothPath.length][2];
-		double[][] rightPath = new double[smoothPath.length][2];
 		double[][] leftFrontPath = new double[smoothPath.length][2];
 		double[][] leftRearPath = new double[smoothPath.length][2];
 		double[][] rightFrontPath = new double[smoothPath.length][2];
@@ -542,11 +560,20 @@ public class FalconPathPlanner
 		for (int i=0; i<gradient.length; i++)
 		{
 			double headingRad = Math.toRadians(smoothPath[i][2]);
-			leftPath[i][0] = robotTrackWidth/2 * Math.cos(headingRad + Math.PI/2) + smoothPath[i][0];
-			leftPath[i][1] = robotTrackWidth/2 * Math.sin(headingRad + Math.PI/2) + smoothPath[i][1];
-
-			rightPath[i][0] = robotTrackWidth/2 * Math.cos(headingRad - Math.PI/2) + smoothPath[i][0];
-			rightPath[i][1] = robotTrackWidth/2 * Math.sin(headingRad - Math.PI/2) + smoothPath[i][1];
+			double sin = Math.sin(headingRad);
+			double cos = Math.cos(headingRad);
+			
+			leftFrontPath[i][0] = -robotTrackWidth/2 * cos - robotTrackLength/2 * sin + smoothPath[i][0];
+			leftFrontPath[i][1] = -robotTrackWidth/2 * sin + robotTrackLength/2 * cos + smoothPath[i][1];
+			
+			leftRearPath[i][0] = -robotTrackWidth/2 * cos - -robotTrackLength/2 * sin + smoothPath[i][0];
+			leftRearPath[i][1] = -robotTrackWidth/2 * sin + -robotTrackLength/2 * cos + smoothPath[i][1];
+			
+			rightFrontPath[i][0] = robotTrackWidth/2 * cos - robotTrackLength/2 * sin + smoothPath[i][0];
+			rightFrontPath[i][1] = robotTrackWidth/2 * sin + robotTrackLength/2 * cos + smoothPath[i][1];
+			
+			rightRearPath[i][0] = robotTrackWidth/2 * cos - -robotTrackLength/2 * sin + smoothPath[i][0];
+			rightRearPath[i][1] = robotTrackWidth/2 * sin + -robotTrackLength/2 * cos + smoothPath[i][1];
 
 			//convert to degrees 0 to 360 where 0 degrees is +X - axis, accumulated to align with WPI sensor
 			double deg = Math.toDegrees(gradient[i][1]);
@@ -561,14 +588,13 @@ public class FalconPathPlanner
 				if((deg-gradient[i-1][1])<-180)
 					gradient[i][1] = 360+deg;
 			}
-
-
-
 		}
 
 		this.heading = gradient;
-		this.leftPath = leftPath;
-		this.rightPath = rightPath;
+		this.leftFrontPath = leftFrontPath;
+		this.leftRearPath = leftRearPath;
+		this.rightFrontPath = rightFrontPath;
+		this.rightRearPath = rightRearPath;
 	}
 	
 	/**
@@ -705,11 +731,11 @@ public class FalconPathPlanner
 		//calculate mecanum wheel paths based on center path
 		calcWheelPaths(smoothPath, robotTrackWidth, robotTrackLength);
 
-		origCenterVelocity = velocity(smoothPath, timeStep);
-		origLeftFrontVelocity = velocity(leftFrontPath, timeStep);
-		origLeftRearVelocity = velocity(leftRearPath, timeStep);
-		origRightFrontVelocity = velocity(rightFrontPath, timeStep);
-		origRightRearVelocity = velocity(rightRearPath, timeStep);
+		origCenterVelocity = velocity(smoothPath, timeStep, MotorType.kNone);
+		origLeftFrontVelocity = velocity(leftFrontPath, timeStep, MotorType.kFrontLeft);
+		origLeftRearVelocity = velocity(leftRearPath, timeStep, MotorType.kRearLeft);
+		origRightFrontVelocity = velocity(rightFrontPath, timeStep, MotorType.kFrontRight);
+		origRightRearVelocity = velocity(rightRearPath, timeStep, MotorType.kRearRight);
 
 		//copy smooth velocities into fix Velocities
 		smoothCenterVelocity =  doubleArrayCopy(origCenterVelocity);
@@ -746,23 +772,20 @@ public class FalconPathPlanner
 		long start = System.currentTimeMillis();
 		//System.setProperty("java.awt.headless", "true"); //enable this to true to emulate roboRio environment
 
-
-		//create waypoint path
+		//create waypoint path of a fairly practical example
 		double[][] waypoints = new double[][]{
-				{1, 1, 0},
-				{5, 1, 0},
-				{9, 12, 45},
-				{12, 9, 45},
-				{15, 6, 120},
-				{19, 12, 180}
-		}; 
+				{1, 1, 90},
+				{4, 2, 90},
+				{4, 8, 90},
+				{2, 22, 315}
+		};
 
 		double totalTime = 8; //seconds
 		double timeStep = 0.1; //period of control loop on Rio, seconds
 		double robotTrackWidth = 2; //distance between left and right wheels, feet
 		double robotTrackLength = 2.5; //distance between front and rear wheels, feet
 
-		final FalconPathPlanner path = new FalconPathPlanner(waypoints);
+		final MecanumPathPlanner path = new MecanumPathPlanner(waypoints);
 		path.calculate(totalTime, timeStep, robotTrackWidth, robotTrackLength);
 
 		System.out.println("Time in ms: " + (System.currentTimeMillis()-start));
@@ -775,7 +798,7 @@ public class FalconPathPlanner
 			fig2.xGridOn();
 			fig2.setYLabel("Velocity (ft/sec)");
 			fig2.setXLabel("time (seconds)");
-			fig2.setTitle("Velocity Profile for Left and Right Wheels \n LF = Cyan, RF = Magenta, LR = Orange, RR = Green");
+			fig2.setTitle("Velocity Profile for Left and Right Wheels \n LF = Cyan, RF = Magenta, LR = Green, RR = Orange");
 			fig2.addData(path.smoothRightFrontVelocity, Color.magenta);
 			fig2.addData(path.smoothLeftFrontVelocity, Color.cyan);
 			fig2.addData(path.smoothRightRearVelocity, Color.orange);
@@ -794,124 +817,81 @@ public class FalconPathPlanner
 			fig1.addData(path.smoothPath, Color.red, Color.blue);
 
 
-			fig1.addData(path.leftFrontPath, Color.magenta);
-			fig1.addData(path.leftRearPath, Color.orange);
+			fig1.addData(path.leftFrontPath, Color.cyan);
+			fig1.addData(path.leftRearPath, Color.green);
 			fig1.addData(path.rightFrontPath, Color.magenta);
-			fig1.addData(path.rightRearPath, Color.green);
+			fig1.addData(path.rightRearPath, Color.orange);
 
 
-			//generate poof path used in 2014 Einstein
-			path.poofExample();
+			//generate figure 8 path
+			path.figure8Example();
 
 		}
-
-
 		//example on printing useful path information
 		//System.out.println(path.numFinalPoints);
 		//System.out.println(path.pathAlpha);
-
-
-
-
 	}
 
-	public void poofExample()
+	public void figure8Example()
 	{
-		/***Poof Example***/
+		/***Sweet Figure 8 with rotation example (not practical at all)***/
+		//Normally you would use a 0 heading and drive in +y for forward, but this fits on the field plot better
 
-		//Lets create a bank image
-		FalconLinePlot fig3 = new FalconLinePlot(new double[][]{{0.0,0.0}});
-		fig3.yGridOn();
-		fig3.xGridOn();
-		fig3.setYLabel("Y (feet)");
-		fig3.setXLabel("X (feet)");
-		fig3.setTitle("Top Down View of FRC Field (30ft x 27ft) \n shows global position of robot path, along with left and right wheel trajectories");
-
-
-		//force graph to show 1/2 field dimensions of 24.8ft x 27 feet
-		double fieldWidth = 32.0;
-		fig3.setXTic(0, 27, 1);
-		fig3.setYTic(0, fieldWidth, 1);
-
-
-		//lets add field markers to help visual
-		//http://www.usfirst.org/sites/default/files/uploadedFiles/Robotics_Programs/FRC/Game_and_Season__Info/2014/fe-00037_RevB.pdf
-		//Goal line
-		double[][] goalLine = new double[][] {{26.5,0}, {26.5, fieldWidth}};
-		fig3.addData(goalLine, Color.black);
-
-		//Low Goals roughly 33 inch x 33 inch and 24.6 ft apart (inside to inside)
-		double[][] leftLowGoal = new double[][]{
-				{26.5, fieldWidth/2 + 24.6/2},
-				{26.5, (fieldWidth)/2 + 24.6/2 + 2.75},
-				{26.5 - 2.75, fieldWidth/2 + 24.6/2 + 2.75},
-				{26.5 - 2.75, fieldWidth/2 + 24.6/2},
-				{26.5, fieldWidth/2 + 24.6/2},
+		double[][] waypoints = new double[][]{
+				{2, 8, 90},
+				{7, 2, 135},
+				{12, 8, 180},
+				{17, 14, 225},
+				{22, 8, 270},
+				{17, 2, 315},
+				{12, 8, 360},
+				{7, 14, 405},
+				{2, 8, 450}
 		};
 
-		double[][] rightLowGoal = new double[][]{
-				{26.5, fieldWidth/2 - 24.6/2},
-				{26.5, fieldWidth/2 - 24.6/2 - 2.75},
-				{26.5 - 2.75, fieldWidth/2 - 24.6/2 - 2.75},
-				{26.5 - 2.75, fieldWidth/2 - 24.6/2},
-				{26.5, fieldWidth/2 - 24.6/2},
-		};
-
-		fig3.addData(leftLowGoal, Color.black);
-		fig3.addData(rightLowGoal, Color.black);
-
-		//Auto Line
-		double[][] autoLine = new double[][] {{26.5-18,0}, {26.5-18, fieldWidth}};
-		fig3.addData(autoLine, Color.black);
-
-
-		double[][] CheesyPath = new double[][]{
-				{7,16,0},
-				{11,16,0},
-				{17,28,0},
-				{23,28,0},
-		};
-
-		long start = System.currentTimeMillis();
-
-		double totalTime = 5; //seconds
-		double timeStep = 0.1; //period of control loop on Rio, seconds
+		double totalTime = 8; //seconds
+		double timeStep = 0.05; //period of control loop on Rio, seconds
 		double robotTrackWidth = 2; //distance between left and right wheels, feet
 		double robotTrackLength = 2.5; //distance between front and rear wheels, feet
 
-		final FalconPathPlanner path = new FalconPathPlanner(CheesyPath);
+		final MecanumPathPlanner path = new MecanumPathPlanner(waypoints);
+		path.setPathAlpha(0.9);
+		path.setPathBeta(0.5);
 		path.calculate(totalTime, timeStep, robotTrackWidth, robotTrackLength);
-		
-		System.out.println("Time in ms: " + (System.currentTimeMillis()-start));
 
-		//waypoint path
-		fig3.addData(path.nodeOnlyPath,Color.blue,Color.green);
+		if(!GraphicsEnvironment.isHeadless())
+		{
 
-		//add all other paths
-		fig3.addData(path.smoothPath, Color.red, Color.blue);
-		fig3.addData(path.leftFrontPath, Color.magenta);
-		fig3.addData(path.leftRearPath, Color.orange);
-		fig3.addData(path.rightFrontPath, Color.magenta);
-		fig3.addData(path.rightRearPath, Color.green);
+			FalconLinePlot fig3 = new FalconLinePlot(path.smoothCenterVelocity,null,Color.blue);
+			fig3.yGridOn();
+			fig3.xGridOn();
+			fig3.setYLabel("Velocity (ft/sec)");
+			fig3.setXLabel("time (seconds)");
+			fig3.setTitle("Velocity Profile for Left and Right Wheels \n LF = Cyan, RF = Magenta, LR = Green, RR = Orange");
+			fig3.addData(path.smoothRightFrontVelocity, Color.magenta);
+			fig3.addData(path.smoothLeftFrontVelocity, Color.cyan);
+			fig3.addData(path.smoothRightRearVelocity, Color.orange);
+			fig3.addData(path.smoothLeftRearVelocity, Color.green);
 
+			FalconLinePlot fig4 = new FalconLinePlot(path.nodeOnlyPath,Color.blue,Color.green);
+			fig4.yGridOn();
+			fig4.xGridOn();
+			fig4.setYLabel("Y (feet)");
+			fig4.setXLabel("X (feet)");
+			fig4.setTitle("Top Down View of FRC Field (24ft x 27ft) \n shows global position of robot path, along with leftFront, leftRear, rightFront, and rightRear wheel trajectories");
 
-		//Velocity
-		FalconLinePlot fig4 = new FalconLinePlot(path.smoothCenterVelocity,null,Color.blue);
-		fig4.yGridOn();
-		fig4.xGridOn();
-		fig4.setYLabel("Velocity (ft/sec)");
-		fig4.setXLabel("time (seconds)");
-		fig4.setTitle("Velocity Profile for Left and Right Wheels \n Left = Cyan, Right = Magenta");
-		fig4.addData(path.smoothRightFrontVelocity, Color.magenta);
-		fig4.addData(path.smoothRightRearVelocity, Color.orange);
-		fig4.addData(path.smoothLeftFrontVelocity, Color.cyan);
-		fig4.addData(path.smoothLeftRearVelocity, Color.green);
-
-		//path heading accumulated in degrees
-		//FalconPathPlanner.print(path.heading);
+			//force graph to show 1/2 field dimensions of 24ft x 27 feet
+			fig4.setXTic(0, 27, 1);
+			fig4.setYTic(0, 24, 1);
+			fig4.addData(path.smoothPath, Color.red, Color.blue);
 
 
-	};
+			fig4.addData(path.leftFrontPath, Color.cyan);
+			fig4.addData(path.leftRearPath, Color.green);
+			fig4.addData(path.rightFrontPath, Color.magenta);
+			fig4.addData(path.rightRearPath, Color.orange);
+		}
+	}
 }	
 
 
